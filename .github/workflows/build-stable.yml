@@ -1,58 +1,61 @@
 name: Build Chromium for Windows
+
 on:
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:   # 手动触发
 
 jobs:
-  # 阶段 1: 准备源码
-  fetch-source:
+  build:
     runs-on: windows-latest
+    timeout-minutes: 350   # 5小时50分，留10分钟余量
+
     steps:
-      - name: Checkout depot_tools
+      # 1. 检出你自己的仓库（触发 workflow 的那个）
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          repository: 'chromium/depot_tools'
-          path: 'depot_tools'
-      - name: Add depot_tools to PATH
-        run: echo "${{ github.workspace }}\\depot_tools" >> $env:GITHUB_PATH
+
+      # 2. 用 git clone 拉 depot_tools（正确来源，不走 actions/checkout）
+      - name: Clone depot_tools
+        run: |
+          git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git C:\depot_tools
+        shell: cmd
+
+      # 3. 环境变量：PATH + 关闭 win toolchain 自动下载 + 关闭自动更新
+      - name: Setup environment
+        run: |
+          echo "C:\depot_tools" >> %GITHUB_PATH%
+          echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" >> %GITHUB_ENV%
+          echo "DEPOT_TOOLS_UPDATE=0" >> %GITHUB_ENV%
+        shell: cmd
+
+      # 4. 拉 Chromium 源码（浅克隆，省时间省空间）
       - name: Fetch Chromium source
         run: |
-          # 注意：--no-history 可以节省大量时间和空间
           fetch --no-history chromium
         shell: cmd
-      - name: Upload source artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: chromium-src
-          path: src/
-          retention-days: 1 # 临时存储，节省空间
+        timeout-minutes: 150
 
-  # 阶段 2: 配置并开始编译
-  build-stage-1:
-    needs: fetch-source
-    runs-on: windows-latest
-    steps:
-      - name: Download source artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: chromium-src
-          path: src/
-      - name: Add depot_tools to PATH
-        run: echo "${{ github.workspace }}\\depot_tools" >> $env:GITHUB_PATH
+      # 5. 生成构建配置（component build 省内存，symbol_level=0 省空间）
       - name: Generate build files
         run: |
           cd src
-          gn gen out/Release --args="is_debug=false is_component_build=false symbol_level=0"
+          gn gen out/Release --args="is_debug=false is_component_build=true symbol_level=0"
         shell: cmd
-      - name: Build (part 1)
+
+      # 6. 开始编译，-j 4 控制并行度
+      - name: Build Chromium
         run: |
           cd src
-          # 使用 -j 控制并行度，避免内存不足
           autoninja -C out/Release -j 4 chrome
         shell: cmd
-        # 注意：这里如果超时，需要根据日志判断编译进度，在下一个 job 中继续
-      - name: Upload build state
+        timeout-minutes: 180
+
+      # 7. 上传编译产物
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chromium-build-state
-          path: src/
-          retention-days: 1
+          name: chromium-windows
+          path: |
+            src\out\Release\chrome.exe
+            src\out\Release\*.dll
+            src\out\Release\locales\
+          retention-days: 7
